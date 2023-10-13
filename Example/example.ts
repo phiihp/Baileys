@@ -108,7 +108,7 @@ const startSock = async() => {
 		}
 
 		async function enterCaptcha() {
-			const response = await sock.requestRegistrationCode({ ...registration, method: 'captcha' })
+			const response = await sock.requestRegistrationCode({ ...registration, method: 'captcha' })
 			const path = __dirname + '/captcha.png'
 			fs.writeFileSync(path, Buffer.from(response.image_blob!, 'base64'))
 
