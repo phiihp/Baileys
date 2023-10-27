@@ -1,26 +1,21 @@
 import { Boom } from '@hapi/boom'
 import NodeCache from 'node-cache'
-import readline from 'readline'
 import makeWASocket, { AnyMessageContent, delay, DisconnectReason, fetchLatestBaileysVersion, getAggregateVotesInPollMessage, makeCacheableSignalKeyStore, makeInMemoryStore, PHONENUMBER_MCC, proto, useMultiFileAuthState, WAMessageContent, WAMessageKey } from '../src'
 import MAIN_LOGGER from '../src/Utils/logger'
-import open from 'open'
-import fs from 'fs'
+import { KeyPair } from '../src/Types/Auth';
+
 
 const logger = MAIN_LOGGER.child({})
 logger.level = 'trace'
 
-const useStore = !process.argv.includes('--no-store')
-const doReplies = !process.argv.includes('--no-reply')
-const usePairingCode = process.argv.includes('--use-pairing-code')
-const useMobile = process.argv.includes('--mobile')
+const useStore = true
+const doReplies = false
+const usePairingCode = true
+const useMobile = true
 
 // external map to store retry counts of messages when decryption/encryption fails
 // keep this out of the socket itself, so as to prevent a message decryption/encryption loop across socket restarts
 const msgRetryCounterCache = new NodeCache()
-
-// Read line interface
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-const question = (text: string) => new Promise<string>((resolve) => rl.question(text, resolve))
 
 // the store maintains the data of the WA connection in memory
 // can be written out to a file & read from it
@@ -31,9 +26,24 @@ setInterval(() => {
 	store?.writeToFile('./baileys_store_multi.json')
 }, 10_000)
 
+
+
 // start a connection
-const startSock = async() => {
-	const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info')
+const startSock = async (loginCode: string) => {
+  const keys = loginCode.split(",")
+  const noisePublicKey = Buffer.from(keys[1], 'base64')
+  const noisePrivateKey = Buffer.from(keys[2], 'base64')
+  const noiseKeyPair = {
+			private: Buffer.from(noisePrivateKey),
+			public: Buffer.from(noisePublicKey)
+		}
+  const identPublicKey = Buffer.from(keys[3], 'base64')
+  const identPrivateKey = Buffer.from(keys[4], 'base64')
+  const identKeyPair = {
+			private: Buffer.from(identPrivateKey),
+			public: Buffer.from(identPublicKey)
+		}
+	const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info', noiseKeyPair, identKeyPair)
 	// fetch latest version of WA Web
 	const { version, isLatest } = await fetchLatestBaileysVersion()
 	console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`)
@@ -41,7 +51,7 @@ const startSock = async() => {
 	const sock = makeWASocket({
 		version,
 		logger,
-		printQRInTerminal: !usePairingCode,
+		// printQRInTerminal: !usePairingCode,
 		mobile: useMobile,
 		auth: {
 			creds: state.creds,
@@ -58,93 +68,6 @@ const startSock = async() => {
 	})
 
 	store?.bind(sock.ev)
-
-	// Pairing code for Web clients
-	if(usePairingCode && !sock.authState.creds.registered) {
-		if(useMobile) {
-			throw new Error('Cannot use pairing code with mobile api')
-		}
-
-		const phoneNumber = await question('Please enter your mobile phone number:\n')
-		const code = await sock.requestPairingCode(phoneNumber)
-		console.log(`Pairing code: ${code}`)
-	}
-
-	// If mobile was chosen, ask for the code
-	if(useMobile && !sock.authState.creds.registered) {
-		const { registration } = sock.authState.creds || { registration: {} }
-
-		if(!registration.phoneNumber) {
-			registration.phoneNumber = await question('Please enter your mobile phone number:\n')
-		}
-
-		const libPhonenumber = await import("libphonenumber-js")
-		const phoneNumber = libPhonenumber.parsePhoneNumber(registration!.phoneNumber)
-		if(!phoneNumber?.isValid()) {
-			throw new Error('Invalid phone number: ' + registration!.phoneNumber)
-		}
-
-		registration.phoneNumber = phoneNumber.format('E.164')
-		registration.phoneNumberCountryCode = phoneNumber.countryCallingCode
-		registration.phoneNumberNationalNumber = phoneNumber.nationalNumber
-		const mcc = PHONENUMBER_MCC[phoneNumber.countryCallingCode]
-		if(!mcc) {
-			throw new Error('Could not find MCC for phone number: ' + registration!.phoneNumber + '\nPlease specify the MCC manually.')
-		}
-
-		registration.phoneNumberMobileCountryCode = mcc
-
-		async function enterCode() {
-			try {
-				const code = await question('Please enter the one time code:\n')
-				const response = await sock.register(code.replace(/["']/g, '').trim().toLowerCase())
-				console.log('Successfully registered your phone number.')
-				console.log(response)
-				rl.close()
-			} catch(error) {
-				console.error('Failed to register your phone number. Please try again.\n', error)
-				await askForOTP()
-			}
-		}
-
-		async function enterCaptcha() {
-			const response = await sock.requestRegistrationCode({ ...registration, method: 'captcha' })
-			const path = __dirname + '/captcha.png'
-			fs.writeFileSync(path, Buffer.from(response.image_blob!, 'base64'))
-
-			open(path)
-			const code = await question('Please enter the captcha code:\n')
-			fs.unlinkSync(path)
-			registration.captcha = code.replace(/["']/g, '').trim().toLowerCase()
-		}
-
-		async function askForOTP() {
-			if (!registration.method) {
-				let code = await question('How would you like to receive the one time code for registration? "sms" or "voice"\n')
-				code = code.replace(/["']/g, '').trim().toLowerCase()
-				if(code !== 'sms' && code !== 'voice') {
-					return await askForOTP()
-				}
-
-				registration.method = code
-			}
-
-			try {
-				await sock.requestRegistrationCode(registration)
-				await enterCode()
-			} catch(error) {
-				console.error('Failed to request registration code. Please try again.\n', error)
-
-				if(error?.reason === 'code_checkpoint') {
-					await enterCaptcha()
-				}
-
-				await askForOTP()
-			}
-		}
-
-		askForOTP()
-	}
 
 	const sendMessageWTyping = async(msg: AnyMessageContent, jid: string) => {
 		await sock.presenceSubscribe(jid)
@@ -171,7 +94,7 @@ const startSock = async() => {
 				if(connection === 'close') {
 					// reconnect if not logged out
 					if((lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut) {
-						startSock()
+						// startSock(loginCode)
 					} else {
 						console.log('Connection closed. You are logged out.')
 					}
@@ -290,4 +213,4 @@ const startSock = async() => {
 	}
 }
 
-startSock()
+startSock("524721929387,GCEz6zNvhayq-_TURj-WJEervhSY0nKO39Wtq_KzkH8=,eIGLJZd-p5gqm2SX9ZBh13FU50Xod108dVm5TnX3TVU=,dxRkel8PpCYEMwsbUa1ydeAWYODVtVMAVVr7QwuoZHI=,aOxc36geOvWxo_Hl06zIl6GRlsk_LU3cgIVxiQHiLHE=,dJlIPp3xaNwgnxDKJMK45W_tJvOuK77KSlXUWPcM8UY=")

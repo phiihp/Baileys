@@ -2,6 +2,7 @@ import { mkdir, readFile, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { proto } from '../../WAProto'
 import { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
+import { KeyPair } from '../Types/Auth'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
 
@@ -12,9 +13,9 @@ import { BufferJSON } from './generics'
  * Again, I wouldn't endorse this for any production level use other than perhaps a bot.
  * Would recommend writing an auth state for use with a proper SQL or No-SQL DB
  * */
-export const useMultiFileAuthState = async(folder: string): Promise<{ state: AuthenticationState, saveCreds: () => Promise<void> }> => {
+export const useMultiFileAuthState = async(folder: string, noiseKey: KeyPair|null = null, identKey: KeyPair|null = null): Promise<{ state: AuthenticationState, saveCreds: () => Promise<void> }> => {
 
-	const writeData = (data: any, file: string) => {
+	const writeData = (data: unknown, file: string) => {
 		return writeFile(join(folder, fixFileName(file)!), JSON.stringify(data, BufferJSON.replacer))
 	}
 
@@ -46,7 +47,7 @@ export const useMultiFileAuthState = async(folder: string): Promise<{ state: Aut
 
 	const fixFileName = (file?: string) => file?.replace(/\//g, '__')?.replace(/:/g, '-')
 
-	const creds: AuthenticationCreds = await readData('creds.json') || initAuthCreds()
+	const creds: AuthenticationCreds = await readData('creds.json') || initAuthCreds(noiseKey, identKey)
 
 	return {
 		state: {

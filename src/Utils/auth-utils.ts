@@ -1,9 +1,10 @@
+/* eslint-disable indent */
 import { randomBytes } from 'crypto'
 import NodeCache from 'node-cache'
 import type { Logger } from 'pino'
 import { v4 as uuidv4 } from 'uuid'
 import { DEFAULT_CACHE_TTLS } from '../Defaults'
-import type { AuthenticationCreds, CacheStore, SignalDataSet, SignalDataTypeMap, SignalKeyStore, SignalKeyStoreWithTransaction, TransactionCapabilityOptions } from '../Types'
+import type { AuthenticationCreds, CacheStore, KeyPair, SignalDataSet, SignalDataTypeMap, SignalKeyStore, SignalKeyStoreWithTransaction, TransactionCapabilityOptions } from '../Types'
 import { Curve, signedKeyPair } from './crypto'
 import { delay, generateRegistrationId } from './generics'
 
@@ -192,13 +193,13 @@ export const addTransactionCapability = (
 	}
 }
 
-export const initAuthCreds = (): AuthenticationCreds => {
-	const identityKey = Curve.generateKeyPair()
-	return {
-		noiseKey: Curve.generateKeyPair(),
+export const initAuthCreds = (noiseKey: KeyPair | null = null, identityKey: KeyPair | null = null): AuthenticationCreds => {
+  const signedIdentityKey = identityKey ?? Curve.generateKeyPair()
+  return {
+		noiseKey: noiseKey ?? Curve.generateKeyPair(),
 		pairingEphemeralKeyPair: Curve.generateKeyPair(),
-		signedIdentityKey: identityKey,
-		signedPreKey: signedKeyPair(identityKey, 1),
+		signedIdentityKey: signedIdentityKey,
+		signedPreKey: signedKeyPair(signedIdentityKey, 1),
 		registrationId: generateRegistrationId(),
 		advSecretKey: randomBytes(32).toString('base64'),
 		processedHistoryMessages: [],
